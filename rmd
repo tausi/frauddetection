@@ -1,0 +1,684 @@
+---
+title: "Intrusion Detection for XYZ Bank"
+author: "Georgina Tolgos and John Stewart"
+date: "Final Project Data Mining Spring 2019"
+output:
+  html_document:
+    highlight: tango
+    theme: cerulean
+    toc: yes
+    toc_depth: 3
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  word_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+# Abstract 
+
+#### Network Anomaly Detection Using R 
+The purpose of this project is to utilize R to analyze and evaluate the different characteristcs of network intrusion sample data provided by XYZ bank to develop a netowrk anomaly detection system. This sample data will be used to determine what factors are indicative of a network intrusion, and develop statistical models to analyze and evaluate this system. This will enable the prediction and flagging of future network intrusions.
+
+The predictive models used for our analysis are linear and logistic regression for prediction, and tree models for classification of the data. The cost of these models is evaluated and compared to determine which will have the least error rate. As XYZ bank wants to eliminate the significant sums of money being siphoned off its bank accounts, it is imperative that the model lowers the probability of false negatives as well.
+
+
+# Introduction
+
+XYZ Bank located in Saint Louis, Missouri has a very large and intricate infrastructure that supports its networking system. A Network Analyst recently discovered unusual network activity. After analyzing a year’s worth of logs, their team of analysts discovered many instances of anomalous network activity. This activity resulted in significant sums of money being siphoned from bank accounts. 
+
+Utilizing the sample date from the provided network_traffic.csv file, which contains a synopsis of logged network activity, we evaluated the data. The data contained labeled examples of benign network sessions as well as examples of sessions involving intrusions.  It is likely that there exist many different intrusion types in the data.  To determine this, we perform and initial analysis of the data to describe it and find any correlations. We then use predictive models to predict and classify intrusions, and finally, for evaluatoin, compare the cost of models to find which has the least error rate.
+
+# Method and Result
+
+### Initial Data Analysis and Evaluation of Baseline Data
+
+#### Preamble: Loading libraries
+
+```
+install.packages("ggplot2")
+install.packages("ISLR")
+install.packages("partykit")
+install.packages("caret")
+install.packages("rpart")
+install.packages("randomForest")
+install.packages("pROC")
+install.packages("corrplot")
+install.packages("rattle")
+install.packages("readr")
+install.packages("readxl")
+install.packages("knitr")
+install.packages("dplyr")
+install.packages("kableExtra")
+install.packages("gridExtra")
+install.packages("gam")
+
+```
+
+```{r Preamble, message=FALSE}
+library(ggplot2)
+library(ISLR)
+library(partykit)
+library(caret)
+library(rpart)
+library(randomForest)
+library(pROC)
+library(corrplot)
+library(rattle)
+library(readr)
+library(readxl)
+library(knitr)
+library(dplyr)
+library(kableExtra)
+library(gridExtra)
+library(gam)
+```
+  
+The first step in analyzing the data was importing it into the R console. 
+
+```{r Load Data, cache= TRUE}
+# Loading the example data from local csv file.
+network_traffic <- read_excel("/cloud/project/Data/network_traffic.csv")
+
+```
+
+The raw data had ```r nrow(network_traffic)``` observations and ```r length(network_traffic)-1``` predictors. A summary of the data shows some predictors do not provide any useful data. They have all zeros and are therefore removed from our analysis.
+
+```{r Data Summary}
+kable(summary(network_traffic)) %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "500px")
+```
+
+#### Data Cleaning
+
+To determine this, the number of levels for each variable is analyzed and any column with a '1' indicates only one value, and not useful for our analysis.
+
+```{r Data Cleaning}
+# use to determine number of levels for each variable - apply(network_traffic, 2, function(i) levels(factor(i)))
+uniq.cols <- rep(1:length(network_traffic))
+nodata <- list()
+for (i in 1:length(network_traffic)){
+  uniq.cols[i] <- length(table(network_traffic[,i]))
+  #any column with a '1' indicates there is only one value. There is no useful data in that column
+ 
+  if (length(table(network_traffic[,i])) == 1) {
+  nodata <- append(nodata, (colnames(network_traffic[i])))
+  }
+}
+```
+
+The following predictors do not contain unique data and will be eliminated: ```r nodata```
+
+```{r Cleaned Data}
+# Condition the data - removing predictors that don't change (level of one)
+network.traffic.subset <- subset(network_traffic, 
+                                 select = -c(land, wrong_fragment, urgent, 
+                                                num_failed_logins,  num_outbound_cmds, 
+                                                is_host_login ) )  
+```
+
+
+### Correlation Determination
+
+Next we sought to view how the data correlates. To evaluate if there is any correlation in the data, to the intrusion variable. The data was evaluated to detrmine the level of correlation between the various predictors. The initial evaluation is below.
+
+```{r Better Correlation}
+
+#Create a better visualization
+#Set these predictors to factors
+network.traffic.subset$protocol_type <- as.factor(network.traffic.subset$protocol_type)
+network.traffic.subset$service <- as.factor(network.traffic.subset$service)
+network.traffic.subset$flag <- as.factor(network.traffic.subset$flag)
+
+net.traf.cor <- network.traffic.subset
+net.traf.cor$protocol_type <- as.numeric((net.traf.cor$protocol_type))
+net.traf.cor$service <- as.numeric(net.traf.cor$service)
+net.traf.cor$flag <- as.numeric(net.traf.cor$flag)
+traf.cor <- cor(net.traf.cor) 
+corrplot(traf.cor)
+
+```
+
+
+```{r Creating correlation of all the variables}
+# network.traffic.subset$protocol_type = as.numeric(as.factor(network.traffic.subset$protocol_type))
+# network.traffic.subset$service = as.numeric(as.factor(network.traffic.subset$service))
+# network.traffic.subset$flag = as.numeric(as.factor(network.traffic.subset$flag))
+# 
+# traf.corr <- cor(network.traffic.subset)
+# corrplot(traf.corr)
+```
+
+From the above correlation plot, we see that there is strong posistive correlation between the numner of comprimised conditions and whether superuser was attempted and the number of root accesses. There is a weaker correlation between those three conditions and the number of operations on access control files. There is a fairly strong negative correlation between protocol; type and whether the individual successfully logged in. There are not any strong correlations between and predictors and the response value of is_intrusion. There is a moderate correlation with the number of data bytes from the source to destination. 
+
+To view this more directly, we plotted the variables against the intrusion flag below.
+
+```{r Data Correlation}
+# land, wrong_fragment, "urgent", "num_failed_logins", "num_outbound_cmds", "is_host_login" are excluded
+
+#find correlations
+netwk.traffic.var.names1 <- c( "duration", "src_bytes", "dst_bytes",  "hot", "is_intrusion")
+netwk.traffic.var.names2 <- c("logged_in", "num_compromised", "root_shell", "su_attempted",  "is_guest_login", "is_intrusion")
+netwk.traffic.var.names3 <- c("num_root", "num_file_creations", "num_shells", "num_access_files",  "is_intrusion") 
+
+
+pairs(network.traffic.subset[,netwk.traffic.var.names1])
+
+pairs(network.traffic.subset[,netwk.traffic.var.names2])
+
+pairs(network.traffic.subset[,netwk.traffic.var.names3])
+
+```
+
+
+Below are the plots with the predictors that show most correlation to the intrustion variable
+
+```{r options(warn = -1)}
+
+#plotting interesting variables
+
+#1 Hot
+plot0 <- qplot(data = network.traffic.subset, x = hot, y = is_intrusion,
+      xlab = "Hot", 
+      ylab = "Intrusion", geom = "jitter") +
+  ggtitle("hot")
+
+#2 Duration
+plot1 <- qplot(data = network.traffic.subset, x = duration, y = is_intrusion,
+      xlab = "Duration", 
+      ylab = "Intrusion", geom = "jitter") + 
+  ggtitle("duration")
+
+#3 Destination Bytes
+plot2 <- qplot(data = network.traffic.subset, x = dst_bytes, y = is_intrusion,
+      xlab = "Destination Bytes", 
+      ylab = "Intrusion", geom = "jitter") + 
+  ggtitle("dst_bytes")
+
+#4 Source Bytes
+plot3 <- qplot(data = network.traffic.subset, x = src_bytes, y = is_intrusion,
+      xlab = "Source Bytes", 
+      ylab = "intrusion", geom = "jitter") + 
+  ggtitle("src_bytes")
+
+#5 Super User Attempted 
+plot4 <- qplot(data = network.traffic.subset, x = su_attempted, y = is_intrusion,
+      xlab = "Super User Attempt", 
+      ylab = "intrusion", geom = "jitter") + 
+  ggtitle("su_attempted")
+
+#6 Root Access  
+plot5 <- qplot(data = network.traffic.subset, x = num_root, y = is_intrusion,
+      xlab = "Root Accses Attempts", 
+      ylab = "intrusion", geom = "jitter") + 
+  ggtitle("num_root")
+
+#7 Protocol  
+plot6 <- qplot(data = network.traffic.subset, x = protocol_type, y = is_intrusion,
+      xlab = "Protocol Type", 
+      ylab = "intrusion", geom = "jitter") + 
+  ggtitle("protocol")
+
+#8 Logged in  
+plot7 <- qplot(data = network.traffic.subset, x = logged_in, y = is_intrusion,
+      xlab = "Is logged In", 
+      ylab = "intrusion", geom = "jitter") + 
+  ggtitle("logged_in")
+
+grid.arrange(plot0, plot1, plot2, plot3, plot4, plot5, plot6, plot7, ncol=4)
+```
+
+
+
+#### Collinearity within the data in relation to the intrusion factor
+
+```{r Soource and Destination Bytes}
+ggplot(data = network.traffic.subset, aes(x = dst_bytes, y = src_bytes, color = is_intrusion)) + 
+  geom_point() + labs( y = "Source Bytes", x = "Destination Bytes") + 
+  ggtitle("Basic Comparison of Source and Destination Bytes")
+```
+
+
+One can see in the graph above that there is a relationship between intrusions and a large number of bytes from the source to the destination while there is no relationship with intrusions and a large number of bytes from the destination to the source. This is further evaluated below.
+
+```{r Source and Destination Bytes Frequency}
+ggplot(data = network.traffic.subset, aes(x = dst_bytes, y = src_bytes, color = is_intrusion)) + 
+  geom_count() + labs( y = "Source Bytes", x = "Destination Bytes") + 
+  ggtitle("Comparison of Source and Destination Bytes Sized by Frequency")
+```
+
+
+When the number of occurences of particular values is incorporated based on the size of the point, we see there are a large number of intrusions and non-intrusions with zero bytes between source and destination going in either direction. The remaining intrusions occur when there is a low number or zero bytes from the destination to source yet a number greater than zero of bytes from the source to the destination. This may be a usefull factor in differentiating between intrusions and non-intrustions.
+
+
+```{r Data Relationships3}
+ggplot(data = network.traffic.subset, aes(x = src_bytes, y = duration, color = is_intrusion)) + 
+  geom_count(alpha = I(0.5))  + labs( y = "Duration", x = "Source Bytes") + 
+  ggtitle("Comparison of Duration and Source Bytes Sized by Frequency")
+```
+
+
+In the comparison between the duration of the connection in seconds and the number of bytes sent from the source to the destination, there appears to be differentiation in some instances of intrusion. While there are a number of intrusions overlapping legitimate connections, there are a significant number of intrusions where the duration is between about 200 and 2100 seconds with bytes from the source of between 150 bytes and over 283,600 bytes. The non-intrusions tend to either be low duration and source bytes below 41,000 or longer duration and much lower source bytes.
+
+
+```{r}
+ggplot(data = network.traffic.subset, aes(x = service, y = protocol_type, color = is_intrusion)) + 
+  geom_count() + labs( y = "Protocol Type", x = "Service") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  ggtitle("Comparison of Protocol Type and Service Sized by Frequency")
+```
+
+The majority of the data depicts http traffic using TCP protocol. There are intrusions using this combination. There are no intrusions using the ICMP protocol and it appears all the intrusions using UDP utilize private service. There are some intrusions using FTP and FTP_Data protocols. These factors should help allow for a model to be devloped to differentiate between intrusions and non-intrustions.
+
+
+```{r}
+ggplot(data = network.traffic.subset, aes(x = logged_in, y = protocol_type, color = is_intrusion)) + 
+  geom_count() + labs( y = "Protocol Type", x = "Logged In") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  ggtitle("Comparison of Protocol Type and Logged in Status Sized by Frequency")
+```
+
+
+Above, we see all the intrusions occur in logged in status.
+
+```{r}
+ggplot(data = network.traffic.subset, aes(x = service, y = flag, color = is_intrusion)) + 
+  geom_count() +   labs( y = "Flag", x = "Service") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  ggtitle("Comparison of Flag and Service Sized by Frequency")
+
+```
+
+The comparison between flag and service provides another potential area of differentiation between intrusion and non-intrusion events. All the intrusions using http service have flags of RSTR, S0 or S3. All of the intrusions using services FTP, FTP_Data and private all have flags of SF. 
+
+
+### Predictive Modelling of Cleaned Data
+
+We have now discovered the structure of our data and what variables correlate to the intrusion variable. These are our qualitative predictors. This has given us information of what are good predictors for our models. 
+Using this information, we then perform regression and classification modelling to predict an intrusion. 
+
+#### Linear Regression Model
+
+```{r}
+network.traffic.lm <- lm(is_intrusion ~ . , data = network.traffic.subset)
+kable(summary(network.traffic.lm)$coefficients) %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "500px")
+```
+
+The model coefficients are:
+
+```{r}
+kable (coef(network.traffic.lm))  %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "500px")
+
+```
+
+From this, we see the significant variables are: 
+
+```{r}
+
+#excluding the intercept
+kable(names(coef(network.traffic.lm)[coef(summary(network.traffic.lm))[, "Pr(>|t|)"]  < 0.05])[-1]) %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "300px")
+
+```
+
+#### Logistic Regression Models
+
+##### Gemeralized Linear Model
+
+```{r, cache= TRUE}
+network.traffic.glm <-  glm(is_intrusion ~ . , data = network.traffic.subset)  #, family = "binomial"
+
+#network.traffic.glm.yhat <- predict(network.traffic.glm, newdata =nt.test, type = "response" )
+#coefficients
+kable(summary(network.traffic.glm)$coefficients)  %>%
+   kable_styling("striped", full_width = F) %>%
+    scroll_box(width = "910px", height = "500px")
+```
+
+
+The significant variables from this model are:
+```{r}
+#significatnt variables
+kable( names(coef(network.traffic.glm)[coef(summary(network.traffic.glm))[, "Pr(>|t|)"]  < 0.05])[-1])  %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "300px")
+
+```
+
+##### Generalized Additive Model
+```{r}
+network.traffic.gam <-  gam(is_intrusion ~ . , data = network.traffic.subset)  #, family = "binomial"
+
+#coefficients
+kable(summary(network.traffic.gam)$coefficients)  %>%
+   kable_styling("striped", full_width = F) %>%
+    scroll_box(width = "910px", height = "500px")
+```
+
+The significant variables from this model are:
+
+```{r} 
+#significatnt variables
+kable( names(coef(network.traffic.gam)[coef(summary(network.traffic.gam))[, "Pr(>|t|)"]  < 0.05])[-1])  %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "500px")
+```
+
+
+#### Tree Model
+
+For the initial tree model:
+
+```{r}
+# Standard Tree 
+tree1 <-  rpart(is_intrusion ~ . , method = "class", data = network.traffic.subset)
+
+min.cv.idx <- which.min(tree1$cptable[,"xerror"])
+# min CV error + 1se (this is the height of the horizontal bar)
+min.cv.err.1se <- tree1$cptable[min.cv.idx,"xerror"] +
+                    tree1$cptable[min.cv.idx,"xstd"]
+# Which cp values produce models whose error is below min CV + 1se?
+candidate.cp.vals <- tree1$cptable[which(tree1$cptable[,"xerror"] < min.cv.err.1se),"CP"]
+# 1-SE rule value of cp
+cp.1se <- max(candidate.cp.vals)
+tree1.pruned <- prune(tree1, cp = cp.1se)
+plot(as.party(tree1.pruned), gp = gpar(fontsize = 6))
+```
+
+
+### Model Evaluation
+
+#### Establishing Training and Test Sets
+
+
+Because we only have ```r nrow(network.traffic.subset)``` samples to work with, we have to divide them into groups to train the model and groups to test the models' ability to predict the outcome.
+
+```{r}
+#Establish training and test data sets to compare different regression techniques
+
+set.seed(101) # Set Seed so that same sample can be reproduced in future also
+# Now Selecting 75% of data as sample from total 'n' rows of the data  
+sample <- sample.int(n = nrow(network.traffic.subset), size = floor(.8*nrow(network.traffic.subset)), replace = T)
+nt.train <- network.traffic.subset[sample, ]
+nt.test  <- network.traffic.subset[-sample, ]
+
+featurePlot(x = nt.train[, c("src_bytes", "dst_bytes", "duration")], 
+            y = as.factor(nt.train$is_intrusion), plot = "density", 
+            scales = list(x = list(relation = "free"), 
+                          y = list(relation = "free")), 
+            adjust = 1.5, pch = "|", layout = c(3, 1), 
+            auto.key = list(columns = 2))
+```
+
+
+
+#### Functions Used to Evaluate Models
+
+```{r}
+classMetrics <- function(score, y, cutoff, 
+                         type = c("all", "accuracy", "sensitivity", 
+                                  "specificity", "ppv", "npv", "precision", 
+                                  "recall")) {
+  # This command throws an error if the user specifies a "type" that
+  # isn't supported by this function
+  type <- match.arg(type, several.ok = TRUE)
+  
+  n <- length(y)
+  cut.score <-ifelse( score >= cutoff, 1, 0)
+  true_pos <- (y==1) & (cut.score == 1)
+  true_neg <-  (y==0) & (cut.score == 0)
+  false_pos <- (y==0) & (cut.score == 1)
+  false_neg <- (y==1) & (cut.score == 0)
+  conf.mat <- matrix(c(sum(true_neg), sum(false_pos), sum(false_neg), sum(true_pos)), 2, 2)
+  colnames(conf.mat) <- c("0","1")
+  row.names(conf.mat) <- c("0", "1")
+  conf.mat1 <- as.table(conf.mat)
+  accuracy <- (sum(true_pos) + sum(true_neg)) / n 
+  conf.mat <- table("predicted" = as.factor(cut.score), "observed" = as.factor(y))
+  precision <-  conf.mat[2,2] / sum(conf.mat[2,])
+  recall <-  conf.mat[2,2] / sum(conf.mat[,2])
+  specificity <- conf.mat[1,1] / sum(conf.mat[,1])
+  sensitivity <- conf.mat[2,2] / sum(conf.mat[,2])
+  prevalence <- sum(conf.mat[,2]) / sum(conf.mat)
+  ppv <- (sensitivity * prevalence)/((sensitivity*prevalence) + 
+                                       ((1-specificity)*(1-prevalence)))
+  npv <- (specificity * (1-prevalence))/(((1-sensitivity)*prevalence) + 
+                                           ((specificity)*(1-prevalence)))
+  
+  perf <- data.frame(accuracy,sensitivity,specificity , ppv, npv,  precision, recall)
+  
+  if (any(type == "all")) { 
+    perf <- t(perf)
+    colnames(perf) <-  "values"
+     ret.val <- list("conf.mat" = conf.mat, "perf" = perf)
+     return(ret.val)
+    
+  } else {
+     perf <- perf[type]
+     perf <- t(perf)
+     colnames(perf) <-  "values"
+     ret.val <- list("conf.mat" = conf.mat, "perf" = perf)
+  return(ret.val)
+  }
+}
+plotClassMetrics <- function(score, y, xvar = NULL, yvar = c("accuracy", "sensitivity", 
+                                  "specificity", "ppv", "npv", "precision", 
+                                  "recall"),
+                             flip.x = FALSE) {
+  yvar <- match.arg(yvar)
+  # Find 100 evenly spaced unique scores to use as base
+  scores.uniq <- unique(score)
+  if(length(scores.uniq) > 100) {
+    cutoff.vals <- sample(scores.uniq, 100, replace = FALSE)
+  } else {
+    cutoff.vals <- scores.uniq
+  }
+  n <- length(cutoff.vals)
+  cutoff.vals <- cutoff.vals[order(cutoff.vals)]
+  x.output <- numeric(n)
+  y.output <- numeric(n)
+  # Loop thru the score values and calculate the perf metrics
+  for(i in 1:n) {
+    if(!is.null(xvar)) {
+      #print(i)
+      metrics <- classMetrics(score, y, cutoff = cutoff.vals[i], type = c(xvar, yvar))$perf
+      x.output[i] <- metrics[xvar, 1]
+      y.output[i] <- metrics[yvar, 1]
+    } else {
+      xvarl = c("Score")
+      metrics <- classMetrics(score, y, cutoff = cutoff.vals[i], type = c(yvar))$perf
+      x.output[i] <- cutoff.vals[i]
+      y.output[i] <- metrics[yvar, 1]
+    }
+  }
+  plotdat <- data.frame(x.output,y.output)
+  plotdat <- plotdat[order(plotdat$x.output),]
+  if (any(flip.x)) {
+    if (is.null(xvar)){
+      xvarl = c("Score")
+    }
+    p <- ggplot(plotdat, aes(x = 1-plotdat$x.output, y= plotdat$y.output)) + 
+      geom_line() + xlab(paste("1 - ", xvar)) +  ylab(yvar) + ylim(0,1.01)
+    p
+  } else {
+    p <- ggplot(plotdat, aes(x = plotdat$x.output, y= plotdat$y.output)) + 
+      geom_line() + xlab(xvarl) +  ylab(yvar) + ylim(0,1.01)
+    p
+  }
+}
+```
+
+
+#### Evaluating the Linear Model
+
+```{r}
+#network.traffic.lm <- lm(is_intrusion ~ . , data = nt.train)
+
+int.lm.yhat <- predict(network.traffic.lm, newdata =nt.test, type = "response" )
+
+
+kable(classMetrics(int.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.01, type = "all")) %>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "200px")
+
+
+kable(classMetrics(int.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.25, type = "all"))%>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "200px")
+
+kable(classMetrics(int.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.5, type = "all"))%>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "200px")
+
+kable(classMetrics(int.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.75, type = "all"))%>%
+  kable_styling("striped", full_width = F) %>%
+  scroll_box(width = "910px", height = "200px")
+
+
+```
+
+
+Comparing the cost of different cutoff values, cost is assumed to be 10 times higher for false negative (not detecting the intrusion), compared to a false positive i.e. non-intrusion assumed to be an intrusion
+
+```{r}
+
+#Compare the cost of different cutoff values
+#Cost is assumed to be 10 times higher for false negative (not detecting the intrusion) 
+#compared to a false positive i.e. non-intrusion assumed to be an intrusion
+
+
+calcCost <- function(score, y, cutoff) {
+  # Form confusion matrix
+  score.factor <- factor(as.numeric(score >= cutoff), levels = c("0", "1"))
+  conf.mat <- table(score.factor, as.factor(y))
+  
+  # Cost = -5 * FP + (0) * TP - 50 * FN
+   -5 * conf.mat[2,1] - 0 * conf.mat[2,2] + 50 * conf.mat[1,2]
+}
+
+# Calculate cost at each cutoff value
+lm.cost <- NULL
+for(i in 1:100) {
+  lm.cost <- c(lm.cost, calcCost(int.lm.yhat, nt.test$is_intrusion, cutoff = i/100))
+}
+
+# Plot cost vs cutoff
+qplot(x = 1:100, y = lm.cost, geom = "line")
+```
+
+
+
+```{r}
+# roc.init.lm <- plotClassMetrics(int.lm.yhat, nt.test$is_intrusion, xvar = "specificity",
+#                                 yvar = "sensitivity", flip.x = TRUE)
+# roc.init.lm
+```
+
+#### Evaluating the Generalized Linear Model
+
+```{r, cache= TRUE}
+glm.lm.yhat <- predict(network.traffic.glm, newdata =nt.test, type = "response" )
+```
+
+
+
+```{r, cache= TRUE}
+# #the training control as repeated 10-fold cross vaidation
+# train_control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# # train the model
+# glm.lm2 <- train(as.factor(is_intrusion) ~., data=network.traffic.subset, trControl=train_control, method="glm")
+# glm.lm2.yhat <- predict(glm.lm2, newdata =nt.test, type = "prob" )
+# train_control <- trainControl(method="LOOCV")
+# # train the model
+# glm.lm3 <- train(as.factor(is_intrusion) ~., data=net.traf, trControl=train_control, method="glm")
+# summary(glm.lm2)
+# summary(glm.lm3)
+# glm.lm3.yhat <- predict(glm.lm3, newdata =nt.test, type = "prob" )
+```
+```{r}
+# classMetrics(glm.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.01, type = "all")
+# classMetrics(glm.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.25, type = "all")
+# classMetrics(glm.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.5, type = "all")
+# classMetrics(glm.lm.yhat, (as.numeric(nt.test$is_intrusion)), cutoff = 0.75, type = "all")
+# roc.glm.lm <- plotClassMetrics(glm.lm.yhat, nt.test$is_intrusion, 
+#                                xvar = "specificity", 
+#                                yvar = "sensitivity", flip.x = TRUE)
+# 
+# classMetrics(glm.lm2.yhat[,2], (as.numeric(nt.test$is_intrusion)), cutoff = 0.01, type = "all")
+# classMetrics(glm.lm3.yhat[,2], (as.numeric(nt.test$is_intrusion)), cutoff = 0.01, type = "all")
+
+
+
+```
+
+```{r}
+# Calculate cost at each cutoff value
+glm.cost <- NULL
+for(i in 1:100) {
+  glm.cost <- c(glm.cost, calcCost(glm.lm.yhat, nt.test$is_intrusion, cutoff = i/100))
+}
+
+# Plot cost vs cutoff
+qplot(x = 1:100, y = glm.cost, geom = "line")
+```
+
+#### Comparison of Linear and Logistic Models
+
+```{r}
+
+# par(mfrow = c(1,2))
+# plot(roc.init.lm, main = "ROC Comparison")
+# plot(roc.glm.lm, col = "red", add = TRUE)
+
+```
+
+
+## Conclusion and Further Work
+
+
+The predictors can be divided into two general categories based on the characteristics of when they are defined and whether they change during the connection.  The first category are those predictors that are defined when the network connection is established. This includes: protocol_type, service, flag and is_guest_login. The other category of predictors includes those that are not fully defined until the completion of the network connection. These predictors include: duration, src_bytes, dst_bytes, num_file_creations, num_shells, num_access_files and num_root. The predictors that are defined when the connection is established have a very high utility in detection of intrusions before any funds could be siphoned from accounts. The predictors that contain data which changes through the course of the connection may have utility, depending on whether they can provide indications of an intrusion before money is lost.
+
+
+## Real Time Evaluation 
+
+```{r Real Time Eval Random Forest, ,echo=FALSE, cache=TRUE}
+train_control <- trainControl(method="repeatedcv", number=10, repeats=3)
+tree.rfrt <- train(as.factor(is_intrusion) ~ service + flag + src_bytes, data=network.traffic.subset, trControl=train_control, method="rf", na.action=na.exclude)
+```
+
+
+```{r Real TIme RF Conf Matrix}
+tree.rfrt.prob <- predict(tree.rfrt, newdata = nt.test)
+# classMetrics(as.numeric(tree.rfrt.prob)-1, nt.test$is_intrusion, cutoff = .01)
+# classMetrics(as.numeric(tree.rfrt.prob)-1, nt.test$is_intrusion, cutoff = .75)$conf.mat
+```
+
+
+```{r Real Time GLM 10 Fold 3X}
+#the training control as repeated 10-fold cross vaidation
+# train_control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# # train the model
+# glm.rt <- train(as.factor(is_intrusion) ~ service + flag + src_bytes, data=net.traf, trControl=train_control, method="glm", na.action=na.exclude)
+# glm.rt.yhat <- predict(glm.rt, newdata =nt.test, type = "prob" )
+# print("Real Time GLM cutoff of 0.01")
+# # classMetrics(glm.rt.yhat[,2], (as.numeric(nt.test$is_intrusion)), cutoff = 0.01, type = "all")
+```
+
+
+```{r Real Time Tree}
+
+tree.rt <-  rpart(is_intrusion ~ service + flag + src_bytes, method = "class", data = nt.train)
+plot(as.party(tree.rt), gp = gpar(fontsize = 6))
+
+tree.rt.prob <- predict(tree.rt, newdata = nt.test, type = "prob")
+kable(classMetrics(tree.rt.prob[,2], nt.test$is_intrusion, cutoff = .01))
+
+```
+
